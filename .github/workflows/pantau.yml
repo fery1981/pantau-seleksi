@@ -1,0 +1,59 @@
+name: Pantau situs seleksi
+
+# Memeriksa https://seleksibinaantarbudaya.or.id dari luar setiap 15 menit, seperti pengunjung biasa:
+# halaman depan harus terbuka, dan /api/v1/readyz harus "ok" (database, penyimpanan berkas, antrean).
+# Bila gagal tiga kali berturut-turut (jeda 20 detik), run ini gagal dan GitHub mengirim email ke pemilik repo.
+# Tidak memakai kredensial apa pun dan tidak mengubah apa pun di server.
+on:
+  schedule:
+    # Menit 7, 22, 37, 52 (UTC): menghindari menit 0, saat antrean jadwal GitHub paling padat.
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      uji_email:
+        description: Gagalkan run ini dengan sengaja untuk menguji email peringatan
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: pantau
+  cancel-in-progress: false
+
+jobs:
+  cek:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Uji email peringatan
+        if: ${{ inputs.uji_email }}
+        run: |
+          echo "### UJI: run ini sengaja digagalkan untuk menguji email peringatan. Situs tidak bermasalah." >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::UJI: run ini sengaja digagalkan untuk menguji email peringatan. Situs tidak bermasalah."
+          exit 1
+
+      - name: Cek halaman depan dan kesehatan API
+        env:
+          SITUS: https://seleksibinaantarbudaya.or.id
+        run: |
+          for i in 1 2 3; do
+            web=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "$SITUS/" || true)
+            api=$(curl -s -m 15 "$SITUS/api/v1/readyz" || true)
+            echo "percobaan $i: halaman depan HTTP $web | API ${api:-tidak menjawab}"
+            if [ "$web" = 200 ] && printf '%s' "$api" | grep -q '"status":"ok"'; then
+              echo "### Situs sehat" >> "$GITHUB_STEP_SUMMARY"
+              echo "Halaman depan HTTP $web, API \`$api\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            [ "$i" = 3 ] || sleep 20
+          done
+          {
+            echo "### Situs BERMASALAH"
+            echo "- Halaman depan: HTTP $web"
+            echo "- API: \`${api:-tidak menjawab}\`"
+            echo
+            echo "Bila tertulis \`\"storage\":\"gagal\"\`: restart container API sesuai catatan internal. Database tidak perlu disentuh."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Situs bermasalah. Halaman depan HTTP $web, API: ${api:-tidak menjawab}"
+          exit 1
